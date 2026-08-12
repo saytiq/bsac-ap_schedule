@@ -482,6 +482,14 @@
       "room": "—"
     }
   ],
-  "announcements": [],
-  "updatedAt": 1786536786574
+  "announcements": [
+    {
+      "id": 102,
+      "text": "тест",
+      "ts": 1786542098873,
+      "day": null,
+      "important": false
+    }
+  ],
+  "updatedAt": 1786542099725
 }
