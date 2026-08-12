@@ -482,14 +482,6 @@
       "room": "—"
     }
   ],
-  "announcements": [
-    {
-      "id": 100,
-      "text": "я тебя люблю",
-      "ts": 1786534007960,
-      "day": null,
-      "important": false
-    }
-  ],
-  "updatedAt": 1786534861988
+  "announcements": [],
+  "updatedAt": 1786536786574
 }
