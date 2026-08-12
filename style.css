@@ -115,6 +115,7 @@ input,textarea,select{font-family:inherit;width:100%;}
   flex-shrink:0;
 }
 .icon-btn.hidden{display:none;}
+.icon-btn.dim{opacity:.4;}
 .icon-btn.on{
   background:var(--teal);
   border-color:var(--teal);

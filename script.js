@@ -64,7 +64,6 @@ function defaultData(){
     lessons: defaultLessons(),
     announcements: [],
     auth: { login: 'admin', pass: 'ap591admin2026' },
-    syncId: null,
     nextId: 100,
   };
 }
@@ -92,15 +91,12 @@ function migrateData(){
     if(a.important === undefined){ a.important = false; changed = true; }
     if(a.day === undefined){ a.day = null; changed = true; }
   });
-  if(DATA.syncId === undefined){ DATA.syncId = null; changed = true; }
+  delete DATA.syncId; // replaced by automatic GitHub-based sync, no per-user code needed
   // auto-remove announcements older than 14 days
   const cutoff = Date.now() - 14 * 86400000;
   const before = DATA.announcements.length;
   DATA.announcements = DATA.announcements.filter(a => a.ts >= cutoff);
   if(DATA.announcements.length !== before) changed = true;
-  // pick up a shared sync code from the URL, e.g. index.html?sync=abc123
-  const urlSync = new URLSearchParams(location.search).get('sync');
-  if(urlSync && urlSync !== DATA.syncId){ DATA.syncId = urlSync; changed = true; }
   if(changed) save();
 }
 
@@ -466,6 +462,7 @@ function openAdmin(){
   renderAdminDayFilter();
   renderLessonsEditor();
   renderAdminAnnouncements();
+  renderSyncSection();
   openModal('adminModal');
 }
 $$('.admin-tab').forEach(tab=>{
@@ -709,9 +706,7 @@ $('#importBtn').addEventListener('click', ()=>{
   try{
     const parsed = JSON.parse(area.value);
     if(!parsed.lessons || !parsed.auth) throw new Error('bad shape');
-    const keepSyncId = DATA.syncId;
     DATA = parsed;
-    if(DATA.syncId === undefined) DATA.syncId = keepSyncId;
     migrateData();
     save();
     renderAll();
@@ -725,10 +720,8 @@ $('#importBtn').addEventListener('click', ()=>{
 
 $('#resetBtn').addEventListener('click', ()=>{
   if(!confirm('Вернуть исходное расписание? Все ваши изменения будут потеряны.')) return;
-  const keepSyncId = DATA.syncId;
   const keepAuth = DATA.auth;
   DATA = defaultData();
-  DATA.syncId = keepSyncId;
   DATA.auth = keepAuth;
   save();
   renderAll();
@@ -737,72 +730,105 @@ $('#resetBtn').addEventListener('click', ()=>{
   showToast('Расписание сброшено к исходному');
 });
 
-/* ================= CLOUD SYNC (kvdb.io, no signup needed) ================= */
-const SYNC_API = 'https://kvdb.io';
+/* ================= CLOUD SYNC (auto, via this site's own GitHub repo) =================
+   No code or password for readers: every visitor's browser reads the shared
+   data file straight from the public repo the site is hosted in — detected
+   automatically from the page URL (works out of the box on GitHub Pages).
+   Only the admin needs a one-time GitHub token, to allow *writing* changes back. */
+const REPO_INFO = detectGithubRepo();
+const SYNC_BRANCHES = ['main', 'master', 'gh-pages'];
+const SYNC_PATH = 'sync-data.json';
+let activeBranch = null;
 let syncPolling = null;
 
-async function enableSync(){
-  showToast('Включаю синхронизацию...');
-  try{
-    const res = await fetch(SYNC_API + '/', { method: 'POST' });
-    if(!res.ok) throw new Error('bad response');
-    const id = (await res.text()).trim();
-    if(!id) throw new Error('empty id');
-    DATA.syncId = id;
-    save();
-    await pushCloud();
-    renderSyncSection();
-    startSyncPolling();
-    updateSyncIcon();
-    showToast('Синхронизация включена');
-  }catch(e){
-    showToast('Не удалось включить синхронизацию — проверьте интернет');
+function detectGithubRepo(){
+  const metaOwner = document.querySelector('meta[name="gh-owner"]')?.content?.trim();
+  const metaRepo = document.querySelector('meta[name="gh-repo"]')?.content?.trim();
+  if(metaOwner && metaRepo) return { owner: metaOwner, repo: metaRepo };
+
+  const host = location.hostname;
+  if(!host.endsWith('.github.io')) return null;
+  const owner = host.split('.')[0];
+  const segments = location.pathname.split('/').filter(Boolean);
+  const first = segments[0];
+  const looksLikeFile = first && first.includes('.');
+  const repo = (first && !looksLikeFile) ? first : `${owner}.github.io`;
+  return { owner, repo };
+}
+
+function isSyncConfigured(){ return !!REPO_INFO; }
+
+function getGithubToken(){ return localStorage.getItem('ap591_gh_token') || ''; }
+
+async function pullCloud(silent){
+  if(!isSyncConfigured()){
+    if(!silent) showToast('Автосинхронизация недоступна: сайт открыт не на username.github.io (см. подсказку в Настройках админки)');
+    return;
   }
+  const branches = activeBranch ? [activeBranch, ...SYNC_BRANCHES.filter(b=>b!==activeBranch)] : SYNC_BRANCHES;
+  for(const branch of branches){
+    try{
+      const url = `https://raw.githubusercontent.com/${REPO_INFO.owner}/${REPO_INFO.repo}/${branch}/${SYNC_PATH}?t=${Date.now()}`;
+      const res = await fetch(url, { cache: 'no-store' });
+      if(!res.ok) continue;
+      const remote = await res.json();
+      if(!remote || !remote.lessons) continue;
+      activeBranch = branch;
+      DATA.lessons = remote.lessons;
+      DATA.announcements = remote.announcements || [];
+      save();
+      renderAll();
+      if(state.isAdmin && !$('#adminModal').classList.contains('hidden')){
+        renderLessonsEditor();
+        renderAdminAnnouncements();
+      }
+      if(!silent) showToast('Расписание обновлено');
+      return;
+    }catch(e){ /* try next branch */ }
+  }
+  if(!silent) showToast('Пока нет опубликованных данных в репозитории');
 }
 
 async function pushCloud(){
-  if(!DATA.syncId) return;
-  try{
-    await fetch(`${SYNC_API}/${DATA.syncId}/schedule`, {
-      method: 'PUT',
-      body: JSON.stringify({ lessons: DATA.lessons, announcements: DATA.announcements, updatedAt: Date.now() })
-    });
-  }catch(e){ /* silent — will retry on next edit */ }
-}
-
-async function pullCloud(silent){
-  if(!DATA.syncId) return;
-  try{
-    const res = await fetch(`${SYNC_API}/${DATA.syncId}/schedule`);
-    if(!res.ok) throw new Error('no data yet');
-    const remote = await res.json();
-    if(!remote || !remote.lessons) throw new Error('bad payload');
-    DATA.lessons = remote.lessons;
-    DATA.announcements = remote.announcements || [];
-    save();
-    renderAll();
-    if(state.isAdmin && !$('#adminModal').classList.contains('hidden')){
-      renderLessonsEditor();
-      renderAdminAnnouncements();
-    }
-    if(!silent) showToast('Расписание обновлено из облака');
-  }catch(e){
-    if(!silent) showToast('Не удалось получить данные из облака');
+  if(!isSyncConfigured()) return;
+  const token = getGithubToken();
+  if(!token){
+    showToast('Сохранено локально. Добавьте GitHub-токен в Настройках, чтобы это увидели все.');
+    return;
   }
-}
+  const branch = activeBranch || 'main';
+  try{
+    let sha = null;
+    const getRes = await fetch(
+      `https://api.github.com/repos/${REPO_INFO.owner}/${REPO_INFO.repo}/contents/${SYNC_PATH}?ref=${branch}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if(getRes.ok){ sha = (await getRes.json()).sha; }
+    else if(getRes.status !== 404){ throw new Error('Не удалось прочитать текущий файл (проверьте токен и права)'); }
 
-function disableSync(){
-  DATA.syncId = null;
-  save();
-  stopSyncPolling();
-  renderSyncSection();
-  updateSyncIcon();
-  showToast('Синхронизация отключена на этом устройстве');
+    const payload = { lessons: DATA.lessons, announcements: DATA.announcements, updatedAt: Date.now() };
+    const content = btoa(unescape(encodeURIComponent(JSON.stringify(payload, null, 2))));
+    const putRes = await fetch(
+      `https://api.github.com/repos/${REPO_INFO.owner}/${REPO_INFO.repo}/contents/${SYNC_PATH}`,
+      {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'Обновление расписания', content, branch, sha: sha || undefined })
+      }
+    );
+    if(!putRes.ok){
+      const errBody = await putRes.json().catch(()=>({}));
+      throw new Error(errBody.message || 'push failed');
+    }
+    activeBranch = branch;
+  }catch(e){
+    showToast('Не удалось отправить изменения в GitHub — проверьте токен');
+  }
 }
 
 function startSyncPolling(){
   stopSyncPolling();
-  if(!DATA.syncId) return;
+  if(!isSyncConfigured()) return;
   syncPolling = setInterval(()=>{
     const adminEditing = state.isAdmin && !$('#adminModal').classList.contains('hidden');
     if(!adminEditing) pullCloud(true);
@@ -813,60 +839,57 @@ function stopSyncPolling(){
 }
 
 function updateSyncIcon(){
-  $('#syncRefreshBtn').classList.toggle('hidden', !DATA.syncId);
+  $('#syncRefreshBtn').classList.toggle('dim', !isSyncConfigured());
 }
 
 function renderSyncSection(){
   const el = $('#syncSection');
   if(!el) return;
-  if(!DATA.syncId){
+  if(!isSyncConfigured()){
     el.innerHTML = `
       <div class="sync-box">
-        <div class="sync-status"><span class="sync-dot"></span>Синхронизация выключена</div>
-        <button class="btn btn-primary btn-block" id="enableSyncBtn">Включить синхронизацию</button>
+        <div class="sync-status"><span class="sync-dot"></span>Сайт открыт не с github.io</div>
+        <p class="hint">Автосинхронизация работает только на адресе вида username.github.io — на нём и должен быть опубликован сайт.</p>
       </div>`;
-    $('#enableSyncBtn').addEventListener('click', enableSync);
-  } else {
-    const link = `${location.origin}${location.pathname}?sync=${DATA.syncId}`;
-    el.innerHTML = `
-      <div class="sync-box">
-        <div class="sync-status"><span class="sync-dot on"></span>Синхронизация включена</div>
-        <p class="hint">Отправьте эту ссылку одногруппникам — у них будет то же расписание и объявления, автоматически.</p>
-        <div class="sync-code-row">
-          <input type="text" id="syncLinkInput" value="${escapeAttr(link)}" readonly>
-          <button class="btn btn-ghost btn-small" id="copySyncBtn">Копировать</button>
-        </div>
-        <div class="settings-row">
-          <button class="btn btn-ghost" id="pullNowBtn">Обновить сейчас</button>
-          <button class="btn btn-danger" id="disableSyncBtn">Отключить</button>
-        </div>
-      </div>`;
-    $('#copySyncBtn').addEventListener('click', ()=>{
-      const input = $('#syncLinkInput');
-      input.select();
-      navigator.clipboard?.writeText(input.value).then(
-        ()=> showToast('Ссылка скопирована'),
-        ()=> document.execCommand('copy')
-      );
-    });
-    $('#pullNowBtn').addEventListener('click', ()=> pullCloud(false));
-    $('#disableSyncBtn').addEventListener('click', ()=>{
-      if(confirm('Отключить синхронизацию на этом устройстве? Расписание останется локально.')) disableSync();
-    });
+    return;
   }
+  const token = getGithubToken();
+  el.innerHTML = `
+    <div class="sync-box">
+      <div class="sync-status"><span class="sync-dot ${token ? 'on' : ''}"></span>${token ? 'Запись включена на этом устройстве' : 'Токен не сохранён — запись отключена'}</div>
+      <label class="field">
+        <span>GitHub-токен (fine-grained, права Contents: Read and write на этот репозиторий)</span>
+        <input type="password" id="ghTokenInput" placeholder="github_pat_..." value="${token ? '••••••••••••••••' : ''}">
+      </label>
+      <div class="settings-row">
+        <button class="btn btn-primary" id="saveTokenBtn">Сохранить токен</button>
+        ${token ? '<button class="btn btn-danger" id="clearTokenBtn">Удалить токен</button>' : ''}
+      </div>
+      <div class="settings-row">
+        <button class="btn btn-ghost" id="pullNowBtn">Обновить сейчас</button>
+        <button class="btn btn-ghost" id="pushNowBtn">Отправить сейчас</button>
+      </div>
+      <p class="hint">Читают расписание все посетители сайта без токена и без ссылок — это нужно только для сохранения изменений.</p>
+    </div>`;
+  $('#saveTokenBtn').addEventListener('click', ()=>{
+    const input = $('#ghTokenInput');
+    if(input.value && !input.value.startsWith('•')){
+      localStorage.setItem('ap591_gh_token', input.value.trim());
+      showToast('Токен сохранён на этом устройстве');
+      renderSyncSection();
+    }
+  });
+  const clearBtn = $('#clearTokenBtn');
+  if(clearBtn) clearBtn.addEventListener('click', ()=>{
+    localStorage.removeItem('ap591_gh_token');
+    showToast('Токен удалён');
+    renderSyncSection();
+  });
+  $('#pullNowBtn').addEventListener('click', ()=> pullCloud(false));
+  $('#pushNowBtn').addEventListener('click', ()=> pushCloud().then(()=> showToast('Отправлено')));
 }
 
 $('#syncRefreshBtn').addEventListener('click', ()=> pullCloud(false));
-
-$('#joinSyncLink').addEventListener('click', ()=>{
-  const code = prompt('Вставьте код синхронизации (его даёт староста в настройках админки):');
-  if(!code) return;
-  DATA.syncId = code.trim();
-  save();
-  updateSyncIcon();
-  startSyncPolling();
-  pullCloud(false);
-});
 
 /* ================= VIEW TOGGLE / SHARE ================= */
 $('#viewToggle').addEventListener('click', ()=>{
@@ -909,31 +932,60 @@ let remindersInterval = null;
 const notifiedToday = new Set();
 
 function remindersEnabled(){ return localStorage.getItem('ap591_reminders') === '1'; }
+function reminderMinutes(){ return Number(localStorage.getItem('ap591_reminder_minutes')) || 15; }
 
 function updateReminderIcon(){
   $('#reminderToggle').classList.toggle('on', remindersEnabled());
 }
 
-$('#reminderToggle').addEventListener('click', async ()=>{
+$('#reminderToggle').addEventListener('click', ()=>{
   if(!('Notification' in window)){
     showToast('Браузер не поддерживает уведомления');
     return;
   }
-  if(!remindersEnabled()){
-    const perm = await Notification.requestPermission();
-    if(perm !== 'granted'){
-      showToast('Разрешите уведомления в браузере');
-      return;
-    }
-    localStorage.setItem('ap591_reminders', '1');
-    startReminders();
-    showToast('Напоминания включены (за 15 минут до пары)');
-  } else {
-    localStorage.setItem('ap591_reminders', '0');
-    stopReminders();
-    showToast('Напоминания выключены');
+  $('#reminderMinutesSelect').value = String(reminderMinutes());
+  renderReminderStatus();
+  openModal('reminderModal');
+});
+
+function renderReminderStatus(){
+  const on = remindersEnabled();
+  $('#reminderDot').classList.toggle('on', on);
+  $('#reminderStatusText').textContent = on ? `Включены — за ${reminderMinutes()} мин` : 'Выключены';
+}
+
+$('#reminderOnBtn').addEventListener('click', async ()=>{
+  const perm = await Notification.requestPermission();
+  if(perm !== 'granted'){
+    showToast('Разрешите уведомления в браузере, чтобы включить напоминания');
+    return;
   }
+  const mins = Number($('#reminderMinutesSelect').value);
+  localStorage.setItem('ap591_reminders', '1');
+  localStorage.setItem('ap591_reminder_minutes', String(mins));
+  notifiedToday.clear();
+  startReminders();
   updateReminderIcon();
+  renderReminderStatus();
+  closeModal('reminderModal');
+  showToast(`Напоминания включены — за ${mins} мин до пары`);
+});
+
+$('#reminderOffBtn').addEventListener('click', ()=>{
+  localStorage.setItem('ap591_reminders', '0');
+  stopReminders();
+  updateReminderIcon();
+  renderReminderStatus();
+  closeModal('reminderModal');
+  showToast('Напоминания выключены');
+});
+
+$('#reminderMinutesSelect').addEventListener('change', ()=>{
+  if(remindersEnabled()){
+    localStorage.setItem('ap591_reminder_minutes', $('#reminderMinutesSelect').value);
+    notifiedToday.clear();
+    renderReminderStatus();
+  }
 });
 
 function startReminders(){
@@ -951,16 +1003,18 @@ function checkReminders(){
   const todayIdx = (now.getDay() + 6) % 7;
   if(todayIdx > 5) return;
   const week = currentAcademicWeek(now);
+  const leadMs = reminderMinutes() * 60000;
   const items = DATA.lessons.filter(l => l.day === todayIdx && l.weeks.includes(week) && matchesSubgroup(l));
   items.forEach(l=>{
     const period = PERIODS[l.period - 1];
     const start = parsePeriodStart(period.time, now);
     const msTo = start - now;
     const key = `${now.toDateString()}_${l.id}`;
-    if(msTo > 0 && msTo <= 15 * 60000 && !notifiedToday.has(key)){
+    if(msTo > 0 && msTo <= leadMs && !notifiedToday.has(key)){
       notifiedToday.add(key);
       const sg = l.subgroup ? ` (подгруппа ${l.subgroup})` : '';
-      new Notification(`Через 15 минут: ${l.name}${sg}`, {
+      const minsLeft = Math.round(msTo / 60000);
+      new Notification(`Через ${minsLeft} мин: ${l.name}${sg}`, {
         body: `№${period.n} · ${period.time} · ${l.teacher || ''} · ауд. ${l.room || '—'}`,
       });
     }
@@ -981,7 +1035,7 @@ renderAll();
 updateSyncIcon();
 updateReminderIcon();
 if(remindersEnabled() && 'Notification' in window && Notification.permission === 'granted') startReminders();
-if(DATA.syncId){ pullCloud(true); startSyncPolling(); }
+if(isSyncConfigured()){ pullCloud(true); startSyncPolling(); }
 document.addEventListener('visibilitychange', ()=>{
-  if(document.visibilityState === 'visible' && DATA.syncId) pullCloud(true);
+  if(document.visibilityState === 'visible' && isSyncConfigured()) pullCloud(true);
 });

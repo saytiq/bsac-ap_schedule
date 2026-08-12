@@ -8,6 +8,11 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-192.png">
+<!-- Если сайт открыт на своём домене (не username.github.io), впишите сюда
+     логин на GitHub и название репозитория — иначе автосинхронизация не
+     сможет понять, откуда брать данные. На обычном github.io можно не трогать. -->
+<meta name="gh-owner" content="">
+<meta name="gh-repo" content="">
 <title>АП591 · Расписание</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
@@ -31,7 +36,7 @@
         <button id="reminderToggle" class="icon-btn" aria-label="Напоминания о парах" title="Напоминания о парах">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
         </button>
-        <button id="syncRefreshBtn" class="icon-btn hidden" aria-label="Обновить из облака" title="Обновить из облака">
+        <button id="syncRefreshBtn" class="icon-btn" aria-label="Обновить из облака" title="Обновить расписание вручную">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
         </button>
       </div>
@@ -73,10 +78,7 @@
     </section>
   </main>
 
-  <footer class="foot-note">
-    БГАС · группа АП591
-    <button type="button" id="joinSyncLink" class="link-btn">Подключить синхронизацию с группой</button>
-  </footer>
+  <footer class="foot-note">БГАС · группа АП591</footer>
 </div>
 
 <button id="adminFab" class="admin-fab" aria-label="Админ-панель" title="Админ-панель">
@@ -162,7 +164,7 @@
       <!-- SETTINGS TAB -->
       <div class="admin-panel hidden" id="panel-settings">
         <h4 class="settings-sub">Синхронизация с группой</h4>
-        <p class="hint">Включите — и все, кто откроет вашу ссылку, будут видеть расписание и объявления в реальном времени, без ручной пересылки файлов.</p>
+        <p class="hint">Расписание автоматически подтягивается всем, кто открывает сайт — им ничего вводить не нужно. Чтобы ваши правки отправлялись всем, один раз сохраните здесь токен записи.</p>
         <div id="syncSection"></div>
 
         <h4 class="settings-sub">Сменить логин / пароль</h4>
@@ -175,10 +177,10 @@
           <input id="newPass" type="password">
         </label>
         <button class="btn btn-primary btn-block" id="saveCredsBtn">Сохранить</button>
-        <p class="hint">Логин и пароль не синхронизируются с группой — они хранятся только в этом браузере.</p>
+        <p class="hint">Логин и пароль хранятся только в этом браузере и не передаются никуда.</p>
 
         <h4 class="settings-sub">Резервная копия</h4>
-        <p class="hint">Все данные хранятся в этом браузере. Сделайте копию, чтобы не потерять расписание.</p>
+        <p class="hint">Дополнительно к синхронизации — локальная копия на всякий случай.</p>
         <div class="settings-row">
           <button class="btn btn-ghost" id="exportBtn">Экспорт JSON</button>
           <button class="btn btn-ghost" id="importBtn">Импорт JSON</button>
@@ -191,6 +193,38 @@
         <button class="btn btn-ghost btn-block" id="logoutBtn">Выйти из админки</button>
       </div>
 
+    </div>
+  </div>
+</div>
+
+<!-- REMINDER SETTINGS MODAL -->
+<div id="reminderModal" class="modal-backdrop hidden">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>Напоминания о парах</h3>
+      <button class="modal-close" data-close="reminderModal" aria-label="Закрыть">✕</button>
+    </div>
+    <div class="modal-body">
+      <p class="hint">Присылает уведомление в браузере перед началом пары. Работает, пока сайт открыт (хотя бы в фоновой вкладке).</p>
+      <div class="sync-status" style="margin-bottom:14px;">
+        <span class="sync-dot" id="reminderDot"></span>
+        <span id="reminderStatusText">Выключены</span>
+      </div>
+      <label class="field">
+        <span>Напоминать за</span>
+        <select id="reminderMinutesSelect">
+          <option value="5">5 минут</option>
+          <option value="10">10 минут</option>
+          <option value="15">15 минут</option>
+          <option value="20">20 минут</option>
+          <option value="30">30 минут</option>
+          <option value="60">1 час</option>
+        </select>
+      </label>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-danger" id="reminderOffBtn">Выключить</button>
+      <button class="btn btn-primary" id="reminderOnBtn">Включить</button>
     </div>
   </div>
 </div>
